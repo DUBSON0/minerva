@@ -17,54 +17,10 @@ Definitions
   points recursively: translate to `p_i`, rotate, translate back.
 - End-effector (TCP) is at `p_N = p_last + R_last * tool_offset` with `tool_offset` in the last
   joint's local frame at home pose.
-
-Example
-    from robotic_arm_ik import SixDOFArmIK
-    import numpy as np
-
-    # Define home joint positions (meters) and axes (unit vectors)
-    p_home = np.array([
-        [0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.3],
-        [0.0, 0.2, 0.3],
-        [0.0, 0.4, 0.3],
-        [0.0, 0.6, 0.3],
-        [0.0, 0.8, 0.3],
-    ], dtype=float)
-
-    a_home = np.array([
-        [0.0, 0.0, 1.0],  # base yaw
-        [0.0, 1.0, 0.0],  # shoulder pitch
-        [0.0, 1.0, 0.0],  # elbow pitch
-        [1.0, 0.0, 0.0],  # wrist roll
-        [0.0, 1.0, 0.0],  # wrist pitch
-        [1.0, 0.0, 0.0],  # wrist roll
-    ], dtype=float)
-
-    tool_offset = np.array([0.0, 0.0, 0.1])
-
-    arm = SixDOFArmIK(p_home, a_home, tool_offset=tool_offset)
-
-    # Target pose (position + quaternion [w,x,y,z])
-    target_p = np.array([0.2, 0.4, 0.6])
-    target_q = np.array([1.0, 0.0, 0.0, 0.0])
-
-    sol = arm.solve_ik(target_p, target_q, max_iters=200)
-    if sol.success:
-        print("Angles (rad):", sol.angles)
-        print("Reached position:", sol.fk.end_effector_position)
-    else:
-        print("IK failed:", sol.message)
-
-Notes
-- You can also set joint state with per-joint quaternions using `set_state_from_quaternions`; the
-  quaternion component around each joint axis is used.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import numpy as np
 
@@ -121,9 +77,9 @@ def quat_rotate_vector(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     xy = x * y
     xz = x * z
     yz = y * z
-    rx = (ww + xx - yy - zz) * vx + 2.0 * ((xy - wz) * vy + (xz + wy) * vz)
-    ry = 2.0 * ((xy + wz) * vx + (ww - xx + yy - zz) * vy + (yz - wx) * vz)
-    rz = 2.0 * ((xz - wy) * vx + (yz + wx) * vy + (ww - xx - yy + zz) * vz)
+    rx = (ww + xx - yy - zz) * vx + 2.0 * (xy - wz) * vy + 2.0 * (xz + wy) * vz
+    ry = 2.0 * (xy + wz) * vx + (ww - xx + yy - zz) * vy + 2.0 * (yz - wx) * vz
+    rz = 2.0 * (xz - wy) * vx + 2.0 * (yz + wx) * vy + (ww - xx - yy + zz) * vz
     return np.array([rx, ry, rz])
 
 
@@ -208,6 +164,19 @@ class IKSolution:
     fk: FKResult
     iters: int
     message: str
+    history: Optional["IKHistory"] = None
+
+
+@dataclass
+class IKHistory:
+    iterations: List[int]
+    angle_history: List[np.ndarray]           # list of (N,) arrays
+    eef_positions: List[np.ndarray]           # list of (3,)
+    pos_err_norms: List[float]
+    ori_err_norms: List[float]
+    total_err_norms: List[float]
+    step_norms: List[float]
+    lambdas: List[float]
 
 
 class SixDOFArmIK:
@@ -228,6 +197,8 @@ class SixDOFArmIK:
         p_home: np.ndarray,
         a_home: np.ndarray,
         tool_offset: Optional[np.ndarray] = None,
+        lower_limits: Optional[np.ndarray] = None,
+        upper_limits: Optional[np.ndarray] = None,
     ) -> None:
         p_home = np.asarray(p_home, dtype=float)
         a_home = np.asarray(a_home, dtype=float)
@@ -249,6 +220,23 @@ class SixDOFArmIK:
         )
         # Internal state: angles (radians)
         self.angles: np.ndarray = np.zeros(self.N, dtype=float)
+        # Joint limits (default: [-90°, +90°])
+        if lower_limits is None:
+            self.lower_limits = -0.5 * np.pi * np.ones(self.N, dtype=float)
+        else:
+            ll = np.asarray(lower_limits, dtype=float)
+            if ll.shape != (self.N,):
+                raise ValueError(f"lower_limits must have shape ({self.N},)")
+            self.lower_limits = ll
+        if upper_limits is None:
+            self.upper_limits = 0.5 * np.pi * np.ones(self.N, dtype=float)
+        else:
+            ul = np.asarray(upper_limits, dtype=float)
+            if ul.shape != (self.N,):
+                raise ValueError(f"upper_limits must have shape ({self.N},)")
+            self.upper_limits = ul
+        if np.any(self.lower_limits >= self.upper_limits):
+            raise ValueError("Each lower limit must be strictly less than upper limit")
 
     # -----------------------------
     # State setting
@@ -257,7 +245,7 @@ class SixDOFArmIK:
         angles = np.asarray(angles, dtype=float)
         if angles.shape != (self.N,):
             raise ValueError(f"angles must have shape ({self.N},)")
-        self.angles = angles.copy()
+        self.angles = np.clip(angles, self.lower_limits, self.upper_limits)
 
     def set_state_from_quaternions(self, quats: np.ndarray) -> None:
         quats = np.asarray(quats, dtype=float)
@@ -266,7 +254,19 @@ class SixDOFArmIK:
         angles = np.zeros(self.N, dtype=float)
         for i in range(self.N):
             angles[i] = project_quat_angle_onto_axis(quat_normalize(quats[i]), self.a_home[i])
-        self.angles = angles
+        self.angles = np.clip(angles, self.lower_limits, self.upper_limits)
+
+    def set_joint_limits(self, lower_limits: np.ndarray, upper_limits: np.ndarray) -> None:
+        ll = np.asarray(lower_limits, dtype=float)
+        ul = np.asarray(upper_limits, dtype=float)
+        if ll.shape != (self.N,) or ul.shape != (self.N,):
+            raise ValueError(f"limits must each have shape ({self.N},)")
+        if np.any(ll >= ul):
+            raise ValueError("Each lower limit must be strictly less than upper limit")
+        self.lower_limits = ll
+        self.upper_limits = ul
+        # Clamp current state to the new limits
+        self.angles = np.clip(self.angles, self.lower_limits, self.upper_limits)
 
     # -----------------------------
     # Forward kinematics (recursive)
@@ -296,7 +296,7 @@ class SixDOFArmIK:
                 P[j] = P[i] + quat_rotate_vector(q_i, rel)
 
             # Update downstream orientation
-            q_cum = quat_multiply(q_i, q_cum)
+            q_cum = quat_normalize(quat_multiply(q_i, q_cum))
 
         # End-effector pose
         p_end = P[-1] + quat_rotate_vector(q_cum, self.tool_offset)
@@ -339,8 +339,9 @@ class SixDOFArmIK:
         damping: float = 1e-3,
         min_damping: float = 1e-6,
         step_limit: float = 0.5,
-        pos_tol: float = 1e-4,
-        ori_tol: float = 1e-3,
+        pos_tol: float = 1e-2,
+        ori_tol: float = 1e-2,
+        record_history: bool = False,
     ) -> IKSolution:
         """Solve IK to reach target pose.
 
@@ -356,9 +357,24 @@ class SixDOFArmIK:
             theta = np.asarray(initial_angles, dtype=float)
             if theta.shape != (self.N,):
                 raise ValueError(f"initial_angles must have shape ({self.N},)")
+        # Respect limits from the start
+        theta = np.clip(theta, self.lower_limits, self.upper_limits)
 
         lam = float(damping)
         prev_err = None
+
+        history: Optional[IKHistory] = None
+        if record_history:
+            history = IKHistory(
+                iterations=[],
+                angle_history=[],
+                eef_positions=[],
+                pos_err_norms=[],
+                ori_err_norms=[],
+                total_err_norms=[],
+                step_norms=[],
+                lambdas=[],
+            )
 
         for it in range(1, max_iters + 1):
             J, fk = self.compute_jacobian(theta)
@@ -399,14 +415,26 @@ class SixDOFArmIK:
                 delta = (delta / d_norm) * step_limit
 
             theta = theta + delta
+            # Enforce joint limits after each update
+            theta = np.clip(theta, self.lower_limits, self.upper_limits)
 
             err_pos_norm = float(np.linalg.norm(e_pos))
             err_ori_norm = float(np.linalg.norm(e_rot))
             err_total = err_pos_norm + err_ori_norm
 
+            if history is not None:
+                history.iterations.append(it)
+                history.angle_history.append(theta.copy())
+                history.eef_positions.append(p.copy())
+                history.pos_err_norms.append(err_pos_norm)
+                history.ori_err_norms.append(err_ori_norm)
+                history.total_err_norms.append(err_total)
+                history.step_norms.append(d_norm)
+                history.lambdas.append(lam)
+
             # Check convergence
             if err_pos_norm <= pos_tol and err_ori_norm <= ori_tol:
-                self.angles = theta.copy()
+                self.angles = np.clip(theta, self.lower_limits, self.upper_limits)
                 final_fk = self.forward_kinematics(theta)
                 return IKSolution(
                     success=True,
@@ -414,6 +442,7 @@ class SixDOFArmIK:
                     fk=final_fk,
                     iters=it,
                     message="Converged",
+                    history=history,
                 )
 
             # Adaptive damping: increase if error grew, otherwise decrease softly
@@ -433,18 +462,110 @@ class SixDOFArmIK:
             fk=final_fk,
             iters=max_iters,
             message="Max iterations reached without convergence",
+            history=history,
         )
+
+
+def make_ik_plots(history: IKHistory, angle_labels: Optional[List[str]] = None, show: bool = True, save_prefix: Optional[str] = None):
+    """Plot IK convergence diagnostics from IKHistory.
+
+    Plots:
+    - Error norms (position, orientation, total) and step norms.
+    - Joint angles vs iteration.
+    - 3D end-effector trajectory.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError("matplotlib is required for visualization. Install it via pip.") from exc
+
+    iters = history.iterations
+
+    # Figure 1: Errors and step norm
+    fig1, axs1 = plt.subplots(2, 2, figsize=(10, 6))
+    axs1 = axs1.ravel()
+    axs1[0].plot(iters, history.pos_err_norms, label="pos err [m]")
+    axs1[0].set_title("Position error norm")
+    axs1[0].set_xlabel("iter")
+    axs1[0].set_ylabel("meters")
+    axs1[0].grid(True)
+
+    axs1[1].plot(iters, history.ori_err_norms, color="orange", label="ori err [rad]")
+    axs1[1].set_title("Orientation error norm")
+    axs1[1].set_xlabel("iter")
+    axs1[1].set_ylabel("radians")
+    axs1[1].grid(True)
+
+    axs1[2].plot(iters, history.total_err_norms, color="green", label="total err")
+    axs1[2].set_title("Total error (pos+ori)")
+    axs1[2].set_xlabel("iter")
+    axs1[2].grid(True)
+
+    axs1[3].plot(iters, history.step_norms, color="red", label="step norm [rad]")
+    axs1[3].set_title("Step norm (||Δθ||)")
+    axs1[3].set_xlabel("iter")
+    axs1[3].set_ylabel("radians")
+    axs1[3].grid(True)
+
+    fig1.tight_layout()
+
+    if save_prefix is not None:
+        fig1.savefig(f"{save_prefix}_errors.png", dpi=160)
+
+    # Figure 2: Angles
+    angles_mat = np.vstack(history.angle_history)  # (T, N)
+    T, N = angles_mat.shape
+    fig2, ax2 = plt.subplots(figsize=(10, 6))
+    for j in range(N):
+        label = angle_labels[j] if angle_labels and j < len(angle_labels) else f"θ{j+1}"
+        ax2.plot(iters, angles_mat[:, j], label=label)
+    ax2.set_title("Joint angles vs iteration")
+    ax2.set_xlabel("iter")
+    ax2.set_ylabel("radians")
+    ax2.grid(True)
+    ax2.legend(ncol=min(N, 3))
+    fig2.tight_layout()
+
+    if save_prefix is not None:
+        fig2.savefig(f"{save_prefix}_angles.png", dpi=160)
+
+    # Figure 3: 3D trajectory of end-effector
+    fig3 = plt.figure(figsize=(6, 6))
+    ax3 = fig3.add_subplot(111, projection="3d")
+    P = np.vstack(history.eef_positions)
+    ax3.plot(P[:, 0], P[:, 1], P[:, 2], "-b", label="EEF path")
+    ax3.scatter(P[0, 0], P[0, 1], P[0, 2], color="green", s=40, label="start")
+    ax3.scatter(P[-1, 0], P[-1, 1], P[-1, 2], color="red", s=40, label="end")
+    ax3.set_title("End-effector trajectory")
+    ax3.set_xlabel("X [m]")
+    ax3.set_ylabel("Y [m]")
+    ax3.set_zlabel("Z [m]")
+    ax3.legend(loc="best")
+    fig3.tight_layout()
+
+    if save_prefix is not None:
+        fig3.savefig(f"{save_prefix}_trajectory.png", dpi=160)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig1)
+        plt.close(fig2)
+        plt.close(fig3)
 
 
 __all__ = [
     "SixDOFArmIK",
     "IKSolution",
     "FKResult",
+    "IKHistory",
     "quat_from_axis_angle",
     "quat_from_euler",
     "quat_multiply",
     "quat_conjugate",
     "quat_normalize",
+    "make_ik_plots",
 ]
 
 
