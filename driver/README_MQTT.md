@@ -24,7 +24,9 @@ python3 mqtt_servo_test.py --host 192.168.1.195 --interactive
 ### Prerequisites
 - Raspberry Pi with Ubuntu/Raspbian
 - PCA9685 PWM controller connected via I2C
+- Computer running the web UI (Linux/macOS/Windows)
 - Network connection between your computer and Pi
+- MQTT broker (Mosquitto) installed on the computer running the web UI
 
 ### 1. Transfer Files
 ```bash

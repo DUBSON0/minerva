@@ -12,7 +12,15 @@ PI_HOST="192.168.1.195"
 PI_PASS="minerva"
 PI_TARGET="$PI_USER@$PI_HOST"
 REMOTE_DIR="/home/minerva"
-LOCAL_FILES="pca9685_mqtt_driver.c mqtt_servo_test.py setup_mqtt.sh"
+# Determine script location and set file paths accordingly
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$SCRIPT_DIR" == *"/driver" ]]; then
+    # Script is running from driver directory
+    LOCAL_FILES="pca9685_mqtt_driver.c mqtt_servo_test.py setup_mqtt.sh"
+else
+    # Script is running via symlink from deployments directory
+    LOCAL_FILES="$SCRIPT_DIR/pca9685_mqtt_driver.c $SCRIPT_DIR/mqtt_servo_test.py $SCRIPT_DIR/setup_mqtt.sh"
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -164,8 +172,8 @@ setup_mqtt_remote() {
     # Enable and start mosquitto
     run_remote "sudo systemctl enable mosquitto && sudo systemctl start mosquitto" "Starting MQTT broker"
     
-    # Install Python MQTT library
-    run_remote "pip3 install paho-mqtt" "Installing Python MQTT library"
+    # Install Python MQTT library using system package manager
+    run_remote "sudo apt install -y python3-paho-mqtt" "Installing Python MQTT library"
     
     print_success "MQTT setup completed successfully"
 }

@@ -55,42 +55,23 @@ update_system() {
     print_success "System packages updated"
 }
 
-# Install MQTT broker (Mosquitto)
+# Install MQTT client libraries (no broker - broker runs on web UI computer)
 install_mosquitto() {
-    print_status "Installing Mosquitto MQTT broker..."
-    
+    print_status "Installing Mosquitto MQTT client libraries..."
+
     # Check if we can run sudo without password
     if ! sudo -n true 2>/dev/null; then
         print_error "Cannot run sudo without password prompt."
         print_error "Please run these commands manually on the Pi:"
-        echo "  sudo apt install -y mosquitto mosquitto-clients"
-        echo "  sudo systemctl enable mosquitto"
-        echo "  sudo systemctl start mosquitto"
+        echo "  sudo apt install -y mosquitto-clients"
         return 1
     fi
-    
-    # Install mosquitto and clients
-    sudo apt install -y mosquitto mosquitto-clients
-    
-    # Enable and start mosquitto service
-    sudo systemctl enable mosquitto
-    sudo systemctl start mosquitto
-    
-    # Check if service is running
-    if sudo systemctl is-active --quiet mosquitto; then
-        print_success "Mosquitto MQTT broker installed and running"
-    else
-        print_error "Failed to start Mosquitto service"
-        return 1
-    fi
-    
-    # Test broker
-    print_status "Testing MQTT broker..."
-    timeout 5 mosquitto_pub -h localhost -t test/topic -m "test message" || {
-        print_warning "MQTT test publish failed, but broker might still be working"
-    }
-    
-    print_success "MQTT broker setup completed"
+
+    # Install only the MQTT client libraries (not the broker)
+    sudo apt install -y mosquitto-clients
+
+    print_success "MQTT client libraries installed"
+    print_status "Note: MQTT broker will run on your web UI computer, not on this Pi"
 }
 
 # Install development libraries
@@ -113,13 +94,10 @@ install_dev_libraries() {
 # Install Python MQTT client
 install_python_mqtt() {
     print_status "Installing Python MQTT client libraries..."
-    
-    # Install pip if not present
-    sudo apt install -y python3-pip
-    
-    # Install paho-mqtt
-    pip3 install paho-mqtt
-    
+
+    # Install paho-mqtt using system package manager
+    sudo apt install -y python3-paho-mqtt
+
     print_success "Python MQTT libraries installed"
 }
 

@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PCA9685 Servo Controller</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 20px 0;
+            border-bottom: 1px solid #333;
+        }
+
+        .header h1 {
+            font-size: 2.2rem;
+            font-weight: 300;
+            color: #00ff88;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #888;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .status-bar {
+            background: linear-gradient(135deg, #1a1a1a 0%, #222 100%);
+            border: 1px solid #333;
+            padding: 15px 25px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+
+        .mqtt-status {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            background: #ff4444;
+            box-shadow: 0 0 10px #ff4444;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.connected {
+            background: #00ff88;
+            box-shadow: 0 0 10px #00ff88;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .last-update {
+            font-size: 0.8rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .controls-section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 1rem;
+            margin-bottom: 20px;
+            color: #00ff88;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            font-weight: 300;
+            border-left: 3px solid #00ff88;
+            padding-left: 15px;
+        }
+
+        .global-controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #1a1a1a 0%, #333 100%);
+            color: #e0e0e0;
+            border: 1px solid #444;
+            padding: 12px 20px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-family: inherit;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.2s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn:hover {
+            border-color: #00ff88;
+            color: #00ff88;
+            box-shadow: 0 0 20px rgba(0,255,136,0.3);
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(0,255,136,0.1), transparent);
+            transition: left 0.5s;
+        }
+
+        .btn:hover::before {
+            left: 100%;
+        }
+
+        .servo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .servo-card {
+            background: linear-gradient(135deg, #111 0%, #1a1a1a 100%);
+            border: 1px solid #333;
+            padding: 20px;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .servo-card:hover {
+            border-color: #00ff88;
+            box-shadow: 0 0 30px rgba(0,255,136,0.2);
+        }
+
+        .servo-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #333;
+        }
+
+        .servo-title {
+            font-size: 1.1rem;
+            font-weight: 300;
+            color: #00ff88;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .servo-status {
+            padding: 4px 10px;
+            font-size: 0.7rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border: 1px solid;
+        }
+
+        .servo-status.success {
+            background: rgba(0,255,136,0.1);
+            color: #00ff88;
+            border-color: #00ff88;
+        }
+
+        .servo-status.error {
+            background: rgba(255,68,68,0.1);
+            color: #ff4444;
+            border-color: #ff4444;
+        }
+
+        .servo-status.unknown {
+            background: rgba(136,136,136,0.1);
+            color: #888;
+            border-color: #555;
+        }
+
+        .servo-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .info-item {
+            text-align: center;
+            padding: 15px 10px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid #333;
+        }
+
+        .info-label {
+            font-size: 0.7rem;
+            color: #888;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .info-value {
+            font-size: 1.4rem;
+            font-weight: 300;
+            color: #00ff88;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-label {
+            display: block;
+            margin-bottom: 10px;
+            font-size: 0.8rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .slider-container {
+            position: relative;
+            margin-bottom: 15px;
+        }
+
+        .slider {
+            width: 100%;
+            height: 2px;
+            background: #333;
+            outline: none;
+            appearance: none;
+            cursor: pointer;
+        }
+
+        .slider::-webkit-slider-thumb {
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #00ff88;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(0,255,136,0.5);
+        }
+
+        .slider::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            background: #00ff88;
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 0 10px rgba(0,255,136,0.5);
+        }
+
+        .slider-value {
+            position: absolute;
+            right: 0;
+            top: -25px;
+            background: #00ff88;
+            color: #000;
+            padding: 2px 8px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .input-field {
+            flex: 1;
+            padding: 10px 15px;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid #333;
+            color: #e0e0e0;
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .input-field:focus {
+            outline: none;
+            border-color: #00ff88;
+            box-shadow: 0 0 10px rgba(0,255,136,0.3);
+        }
+
+        .btn-small {
+            padding: 10px 15px;
+            font-size: 0.7rem;
+            min-width: 80px;
+        }
+
+        .message-area {
+            margin-top: 30px;
+            background: linear-gradient(135deg, #0a0a0a 0%, #111 100%);
+            border: 1px solid #333;
+            padding: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .message-area h3 {
+            color: #00ff88;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+            font-weight: 300;
+        }
+
+        .log-entry {
+            margin: 5px 0;
+            padding: 8px 12px;
+            font-size: 0.8rem;
+            font-family: 'JetBrains Mono', monospace;
+            border-left: 2px solid;
+        }
+
+        .log-success {
+            background: rgba(0,255,136,0.05);
+            color: #00ff88;
+            border-left-color: #00ff88;
+        }
+
+        .log-error {
+            background: rgba(255,68,68,0.05);
+            color: #ff4444;
+            border-left-color: #ff4444;
+        }
+
+        .log-info {
+            background: rgba(136,136,136,0.05);
+            color: #888;
+            border-left-color: #555;
+        }
+
+        .loading {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* IK Section Styles */
+        .ik-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+
+        .ik-input-section, .ik-results {
+            background: linear-gradient(135deg, #111 0%, #1a1a1a 100%);
+            border: 1px solid #333;
+            padding: 25px;
+            border-radius: 5px;
+        }
+
+        .ik-coordinates h3 {
+            color: #00ff88;
+            font-size: 1rem;
+            margin-bottom: 20px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 300;
+        }
+
+        .coordinate-inputs {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .ik-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .ik-results h3 {
+            color: #00ff88;
+            font-size: 1rem;
+            margin-bottom: 20px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 300;
+        }
+
+        .ik-status, .ik-position, .ik-angles {
+            margin-bottom: 15px;
+        }
+
+        .ik-angles {
+            margin-bottom: 10px;
+        }
+
+        .ik-status .info-value {
+            /* Default color */
+        }
+
+        .ik-status .info-value.success {
+            color: #00ff88 !important;
+        }
+
+        .ik-status .info-value.error {
+            color: #ff4444 !important;
+        }
+
+        .angles-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .angle-item {
+            background: rgba(0,0,0,0.3);
+            padding: 8px 12px;
+            border: 2px solid #00ff88; /* Make border more visible */
+            text-align: center;
+            font-size: 0.8rem;
+            margin: 2px;
+        }
+
+        .angle-label {
+            color: #888;
+            font-size: 0.7rem;
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .angle-value {
+            color: #00ff88;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 300;
+        }
+
+        .computed-angles {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #333;
+        }
+
+        .computed-angles h4 {
+            color: #00ff88;
+            font-size: 14px;
+            margin-bottom: 10px;
+            font-weight: 300;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Success animation for results */
+        @keyframes successPulse {
+            0% { transform: scale(0.95); opacity: 0; }
+            50% { transform: scale(1.02); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        @media (max-width: 768px) {
+            .servo-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .global-controls {
+                flex-direction: column;
+            }
+
+            .ik-container {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+
+            .coordinate-inputs {
+                grid-template-columns: 1fr;
+            }
+
+            .angles-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .container {
+                padding: 15px;
+            }
+
+            .header h1 {
+                font-size: 1.8rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>◉ SERVO CONTROL SYSTEM</h1>
+            <p>PCA9685 • 6-CHANNEL MOTOR INTERFACE</p>
+        </div>
+
+        <div class="status-bar">
+            <div class="mqtt-status">
+                <div id="statusIndicator" class="status-indicator"></div>
+                <span id="statusText">MQTT: CONNECTING...</span>
+            </div>
+            <div id="lastUpdate" class="last-update">LAST UPDATE: NEVER</div>
+        </div>
+
+        <div class="controls-section">
+            <h2 class="section-title">SYSTEM CONTROLS</h2>
+            <div class="global-controls">
+                <button class="btn" onclick="centerAllServos()">
+                    CENTER ALL
+                </button>
+                <button class="btn" onclick="refreshStatus()">
+                    REFRESH
+                </button>
+                <button class="btn" onclick="clearMessages()">
+                    CLEAR LOG
+                </button>
+            </div>
+        </div>
+
+        <div class="controls-section">
+            <h2 class="section-title">MOTOR ARRAY</h2>
+            <div class="servo-grid" id="servoGrid">
+                <!-- Servo cards will be generated here -->
+            </div>
+        </div>
+
+        <div class="controls-section">
+            <h2 class="section-title">3D POSITION CONTROL</h2>
+            <div class="ik-container">
+                <div class="ik-input-section">
+                    <div class="ik-coordinates">
+                        <h3>Target Position (meters)</h3>
+                        <div class="coordinate-inputs">
+                            <div class="input-group">
+                                <label class="control-label">X Coordinate</label>
+                                <input type="number" step="0.01" value="1.20" class="input-field" id="ik-x" placeholder="0.00">
+                            </div>
+                            <div class="input-group">
+                                <label class="control-label">Y Coordinate</label>
+                                <input type="number" step="0.01" value="0.00" class="input-field" id="ik-y" placeholder="0.00">
+                            </div>
+                            <div class="input-group">
+                                <label class="control-label">Z Coordinate</label>
+                                <input type="number" step="0.01" value="0.00" class="input-field" id="ik-z" placeholder="0.00">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="computed-angles" id="computed-angles" style="display: none;">
+                        <h4>Computed Motor Angles (degrees)</h4>
+                        <div class="angles-grid" id="ik-angles-grid">
+                            <!-- Angles will be displayed here -->
+                        </div>
+                    </div>
+
+                    <div class="ik-actions">
+                        <button class="btn" onclick="computeIK()" id="compute-ik-btn">
+                            COMPUTE IK
+                        </button>
+                        <button class="btn" onclick="moveToIKPosition()">
+                            MOVE TO POSITION
+                        </button>
+                        <button class="btn" onclick="computeAndMove()">
+                            COMPUTE & MOVE
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="message-area">
+            <h3>◦ SYSTEM LOG</h3>
+            <div id="messages"></div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection
+        const socket = io();
+        
+        // Global state
+        let servoStates = {};
+        let mqttConnected = false;
+        
+        // Initialize page
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeServoGrid();
+            loadServoStates();
+        });
+        
+        // Socket event handlers
+        socket.on('connect', function() {
+            addMessage('CONNECTED TO WEB SERVER', 'info');
+        });
+        
+        socket.on('disconnect', function() {
+            addMessage('DISCONNECTED FROM WEB SERVER', 'error');
+        });
+        
+        socket.on('mqtt_status', function(data) {
+            updateMQTTStatus(data.connected);
+        });
+        
+        socket.on('servo_status', function(data) {
+            updateServoState(data.channel, data.state);
+        });
+        
+        socket.on('servo_states', function(data) {
+            servoStates = data.servos;
+            updateAllServoCards();
+        });
+        
+        socket.on('command_result', function(data) {
+            if (data.success) {
+                addMessage(`M${String(data.channel + 1).padStart(2, '0')}: COMMAND EXECUTED SUCCESSFULLY`, 'success');
+            } else {
+                addMessage(`M${String(data.channel + 1).padStart(2, '0')}: ${data.message.toUpperCase()}`, 'error');
+            }
+        });
+        
+        // Initialize servo grid
+        function initializeServoGrid() {
+            const grid = document.getElementById('servoGrid');
+            grid.innerHTML = '';
+            
+            for (let i = 0; i < 6; i++) {
+                const servoCard = createServoCard(i);
+                grid.appendChild(servoCard);
+            }
+        }
+        
+        // Create servo card HTML
+        function createServoCard(channel) {
+            const card = document.createElement('div');
+            card.className = 'servo-card';
+            card.id = `servo-${channel}`;
+            
+            card.innerHTML = `
+                <div class="servo-header">
+                    <div class="servo-title">M${String(channel + 1).padStart(2, '0')}</div>
+                    <div class="servo-status unknown" id="status-${channel}">OFFLINE</div>
+                </div>
+                
+                <div class="servo-info">
+                    <div class="info-item">
+                        <div class="info-label">ANGLE</div>
+                        <div class="info-value" id="angle-${channel}">90°</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">DUTY</div>
+                        <div class="info-value" id="duty-${channel}">7.5%</div>
+                    </div>
+                </div>
+                
+                <div class="servo-controls">
+                    <div class="control-group">
+                        <label class="control-label">POSITION CONTROL [0-180°]</label>
+                        <div class="slider-container">
+                            <input type="range" min="0" max="180" value="90" class="slider" 
+                                   id="angle-slider-${channel}" onchange="setServoAngleFromSlider(${channel}, this.value)">
+                            <div class="slider-value" id="angle-value-${channel}">90°</div>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label class="control-label">DIRECT INPUT</label>
+                        <div class="input-group">
+                            <input type="number" min="0" max="180" step="1" value="90" 
+                                   class="input-field" id="angle-input-${channel}" placeholder="000">
+                            <button class="btn btn-small" onclick="setServoAngleFromInput(${channel})">
+                                EXEC
+                            </button>
+                            <button class="btn btn-small" onclick="centerServo(${channel})">
+                                HOME
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            return card;
+        }
+        
+        // Update MQTT status
+        function updateMQTTStatus(connected) {
+            mqttConnected = connected;
+            const indicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+            
+            if (connected) {
+                indicator.className = 'status-indicator connected';
+                statusText.textContent = 'MQTT: ONLINE';
+                addMessage('MQTT BROKER CONNECTED', 'success');
+            } else {
+                indicator.className = 'status-indicator';
+                statusText.textContent = 'MQTT: OFFLINE';
+                addMessage('MQTT BROKER DISCONNECTED', 'error');
+            }
+        }
+        
+        // Update servo state
+        function updateServoState(channel, state) {
+            if (channel < 0 || channel > 5) return;
+            
+            servoStates[channel] = state;
+            updateServoCard(channel, state);
+            updateLastUpdate();
+        }
+        
+        // Update servo card display
+        function updateServoCard(channel, state) {
+            const angleDisplay = document.getElementById(`angle-${channel}`);
+            const dutyDisplay = document.getElementById(`duty-${channel}`);
+            const statusDisplay = document.getElementById(`status-${channel}`);
+            const angleSlider = document.getElementById(`angle-slider-${channel}`);
+            const angleInput = document.getElementById(`angle-input-${channel}`);
+            const angleValue = document.getElementById(`angle-value-${channel}`);
+            
+            if (angleDisplay) angleDisplay.textContent = `${state.angle.toFixed(1)}°`;
+            if (dutyDisplay) dutyDisplay.textContent = `${state.duty_cycle.toFixed(1)}%`;
+            
+            if (statusDisplay) {
+                const statusText = state.status === 'success' ? 'ONLINE' : 
+                                 state.status === 'error' ? 'ERROR' : 'OFFLINE';
+                statusDisplay.textContent = statusText;
+                statusDisplay.className = `servo-status ${state.status}`;
+            }
+            
+            if (angleSlider) {
+                angleSlider.value = state.angle;
+                angleValue.textContent = `${state.angle.toFixed(0)}°`;
+            }
+            
+            if (angleInput) angleInput.value = state.angle.toFixed(0);
+        }
+        
+        // Update all servo cards
+        function updateAllServoCards() {
+            for (let channel = 0; channel < 6; channel++) {
+                if (servoStates[channel]) {
+                    updateServoCard(channel, servoStates[channel]);
+                }
+            }
+        }
+        
+        // Set servo angle from slider
+        function setServoAngleFromSlider(channel, angle) {
+            const value = parseFloat(angle);
+            document.getElementById(`angle-value-${channel}`).textContent = `${value}°`;
+            document.getElementById(`angle-input-${channel}`).value = value;
+            
+            // Debounced update
+            clearTimeout(window[`sliderTimeout-${channel}`]);
+            window[`sliderTimeout-${channel}`] = setTimeout(() => {
+                setServoAngle(channel, value);
+            }, 300);
+        }
+        
+        // Set servo angle from input
+        function setServoAngleFromInput(channel) {
+            const input = document.getElementById(`angle-input-${channel}`);
+            const angle = parseFloat(input.value);
+            
+            if (isNaN(angle) || angle < 0 || angle > 180) {
+                addMessage(`INVALID ANGLE: ${input.value}. MUST BE 0-180°`, 'error');
+                return;
+            }
+            
+            setServoAngle(channel, angle);
+        }
+        
+        // Set servo angle (main function)
+        function setServoAngle(channel, angle) {
+            if (!mqttConnected) {
+                addMessage('CANNOT SEND COMMAND: MQTT NOT CONNECTED', 'error');
+                return;
+            }
+            
+            const card = document.getElementById(`servo-${channel}`);
+            card.classList.add('loading');
+            
+            fetch(`/api/servo/${channel}/angle`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ angle: angle })
+            })
+            .then(response => response.json())
+            .then(data => {
+                card.classList.remove('loading');
+                if (data.success) {
+                    addMessage(`M${String(channel + 1).padStart(2, '0')}: POSITION SET TO ${angle}°`, 'success');
+                    
+                    // Update slider and input to match sent value
+                    document.getElementById(`angle-slider-${channel}`).value = angle;
+                    document.getElementById(`angle-input-${channel}`).value = angle;
+                    document.getElementById(`angle-value-${channel}`).textContent = `${angle}°`;
+                } else {
+                    addMessage(`M${String(channel + 1).padStart(2, '0')}: ${data.message.toUpperCase()}`, 'error');
+                }
+            })
+            .catch(error => {
+                card.classList.remove('loading');
+                addMessage(`M${String(channel + 1).padStart(2, '0')}: NETWORK ERROR`, 'error');
+                console.error('Error:', error);
+            });
+        }
+        
+        // Center single servo
+        function centerServo(channel) {
+            setServoAngle(channel, 90);
+        }
+        
+        // Center all servos
+        function centerAllServos() {
+            if (!mqttConnected) {
+                addMessage('CANNOT SEND COMMAND: MQTT NOT CONNECTED', 'error');
+                return;
+            }
+            
+            document.body.classList.add('loading');
+            
+            fetch('/api/servos/center', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.body.classList.remove('loading');
+                data.results.forEach(result => {
+                    if (result.success) {
+                        addMessage(`M${String(result.channel + 1).padStart(2, '0')}: CENTERED`, 'success');
+                    } else {
+                        addMessage(`M${String(result.channel + 1).padStart(2, '0')}: ${result.message.toUpperCase()}`, 'error');
+                    }
+                });
+                
+                // Update all sliders to 90 degrees
+                for (let i = 0; i < 6; i++) {
+                    document.getElementById(`angle-slider-${i}`).value = 90;
+                    document.getElementById(`angle-input-${i}`).value = 90;
+                    document.getElementById(`angle-value-${i}`).textContent = '90°';
+                }
+            })
+            .catch(error => {
+                document.body.classList.remove('loading');
+                addMessage('NETWORK ERROR WHILE CENTERING SERVOS', 'error');
+                console.error('Error:', error);
+            });
+        }
+        
+        // Load servo states from server
+        function loadServoStates() {
+            fetch('/api/servos')
+                .then(response => response.json())
+                .then(data => {
+                    servoStates = data.servos;
+                    mqttConnected = data.mqtt_connected;
+                    updateMQTTStatus(mqttConnected);
+                    updateAllServoCards();
+                })
+                .catch(error => {
+                    addMessage('FAILED TO LOAD SERVO STATES', 'error');
+                    console.error('Error:', error);
+                });
+        }
+        
+        // Refresh status
+        function refreshStatus() {
+            addMessage('REFRESHING STATUS...', 'info');
+            loadServoStates();
+        }
+        
+        // Add message to message area
+        function addMessage(message, type = 'info') {
+            const messages = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `log-entry log-${type}`;
+            
+            const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+            messageDiv.innerHTML = `<strong>[${timestamp}]</strong> ${message}`;
+            
+            messages.appendChild(messageDiv);
+            messages.scrollTop = messages.scrollHeight;
+            
+            // Limit to 50 messages
+            while (messages.children.length > 50) {
+                messages.removeChild(messages.firstChild);
+            }
+        }
+        
+        // Clear messages
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+            addMessage('MESSAGES CLEARED', 'info');
+        }
+        
+        // Update last update time
+        function updateLastUpdate() {
+            const lastUpdate = document.getElementById('lastUpdate');
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('en-US', { hour12: false });
+            lastUpdate.textContent = `LAST UPDATE: ${timeStr}`;
+        }
+        
+        // Periodic status refresh
+        setInterval(() => {
+            if (mqttConnected) {
+                // Passive refresh - just update the timestamp
+                updateLastUpdate();
+            }
+        }, 30000); // Every 30 seconds
+
+        // ===================
+        // IK Functions
+        // ===================
+
+        // Global IK state
+        let currentIKResult = null;
+
+        function computeIK() {
+            // Visual feedback
+            const button = document.getElementById('compute-ik-btn');
+            if (button) {
+                button.textContent = 'COMPUTING...';
+                button.style.backgroundColor = '#ffaa00';
+                setTimeout(() => {
+                    button.textContent = 'COMPUTE IK';
+                    button.style.backgroundColor = '';
+                }, 2000);
+            }
+
+            const x = parseFloat(document.getElementById('ik-x').value);
+            const y = parseFloat(document.getElementById('ik-y').value);
+            const z = parseFloat(document.getElementById('ik-z').value);
+
+            if (isNaN(x) || isNaN(y) || isNaN(z)) {
+                addMessage('INVALID COORDINATES: Please enter valid numbers', 'error');
+                return;
+            }
+
+
+
+            fetch('/api/ik/compute', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ x: x, y: y, z: z })
+            })
+            .then(response => response.json())
+            .then(data => {
+                displayIKResults(data);
+            })
+            .catch(error => {
+                addMessage('IK COMPUTATION NETWORK ERROR', 'error');
+            });
+        }
+
+        function moveToIKPosition() {
+            if (!currentIKResult || !currentIKResult.success) {
+                addMessage('NO VALID IK RESULT TO MOVE TO', 'error');
+                return;
+            }
+
+
+
+            fetch('/api/ik/move', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ angles: currentIKResult.angles })
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Movement completed
+            })
+            .catch(error => {
+                addMessage('MOVE NETWORK ERROR', 'error');
+                console.error('Error:', error);
+            });
+        }
+
+        function computeAndMove() {
+            const x = parseFloat(document.getElementById('ik-x').value);
+            const y = parseFloat(document.getElementById('ik-y').value);
+            const z = parseFloat(document.getElementById('ik-z').value);
+
+            if (isNaN(x) || isNaN(y) || isNaN(z)) {
+                addMessage('INVALID COORDINATES: Please enter valid numbers', 'error');
+                return;
+            }
+
+            fetch('/api/ik/compute_and_move', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ x: x, y: y, z: z })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    displayIKResults(data.ik_result);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        }
+
+        function applyIKAngles() {
+            if (!currentIKResult || !currentIKResult.success) {
+                return;
+            }
+
+            // Apply each angle to the corresponding servo
+            currentIKResult.angles.forEach((angle, index) => {
+                setServoAngle(index, angle);
+            });
+        }
+
+        function displayIKResults(data) {
+            currentIKResult = data;
+            const anglesSection = document.getElementById('computed-angles');
+            const anglesGrid = document.getElementById('ik-angles-grid');
+
+            if (!anglesSection) {
+                console.error('computed-angles element not found!');
+                return;
+            }
+
+            // Show the computed angles section
+            anglesSection.style.display = 'block';
+
+            if (data.success && data.angles) {
+                // Display angles
+                anglesGrid.innerHTML = '';
+
+                // Create angle display
+                const angleDisplay = document.createElement('div');
+                angleDisplay.style.cssText = `
+                    background: linear-gradient(135deg, #000, #111);
+                    color: #00ff88;
+                    padding: 12px;
+                    margin: 8px 0;
+                    border: 1px solid #00ff88;
+                    border-radius: 3px;
+                    font-family: 'JetBrains Mono', monospace;
+                    font-size: 13px;
+                `;
+                angleDisplay.innerHTML = `
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
+                        ${data.angles.map((angle, index) => `
+                            <div style="background: rgba(0,255,136,0.1); padding: 6px; border-radius: 2px; text-align: center; border: 1px solid rgba(0,255,136,0.3);">
+                                <strong style="font-size: 11px;">J${index + 1}</strong><br>
+                                <span style="font-size: 14px; font-weight: bold;">${angle.toFixed(1)}°</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+                anglesGrid.appendChild(angleDisplay);
+            } else {
+                anglesGrid.innerHTML = '<div style="color: #ff4444; padding: 8px; font-size: 12px;">Computation failed</div>';
+            }
+        }
+
+        function clearIKResults() {
+            currentIKResult = null;
+            const anglesSection = document.getElementById('computed-angles');
+            const anglesGrid = document.getElementById('ik-angles-grid');
+
+            if (anglesSection) {
+                anglesSection.style.display = 'none';
+            }
+            if (anglesGrid) {
+                anglesGrid.innerHTML = '';
+            }
+        }
+    </script>
+</body>
+</html>

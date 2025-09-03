@@ -16,7 +16,7 @@
 #define LED0_ON_L 0x06
 
 // MQTT Configuration
-#define MQTT_HOST "localhost"
+#define MQTT_HOST "192.168.1.241"  // IP of computer running web UI
 #define MQTT_PORT 1883
 #define MQTT_KEEPALIVE 60
 #define MQTT_TOPIC_SERVO "servo/control"
