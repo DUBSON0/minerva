@@ -197,6 +197,8 @@ class SixDOFArmIK:
         p_home: np.ndarray,
         a_home: np.ndarray,
         tool_offset: Optional[np.ndarray] = None,
+        lower_limits: Optional[np.ndarray] = None,
+        upper_limits: Optional[np.ndarray] = None,
     ) -> None:
         p_home = np.asarray(p_home, dtype=float)
         a_home = np.asarray(a_home, dtype=float)
@@ -218,6 +220,23 @@ class SixDOFArmIK:
         )
         # Internal state: angles (radians)
         self.angles: np.ndarray = np.zeros(self.N, dtype=float)
+        # Joint limits (default: [-90°, +90°])
+        if lower_limits is None:
+            self.lower_limits = -0.5 * np.pi * np.ones(self.N, dtype=float)
+        else:
+            ll = np.asarray(lower_limits, dtype=float)
+            if ll.shape != (self.N,):
+                raise ValueError(f"lower_limits must have shape ({self.N},)")
+            self.lower_limits = ll
+        if upper_limits is None:
+            self.upper_limits = 0.5 * np.pi * np.ones(self.N, dtype=float)
+        else:
+            ul = np.asarray(upper_limits, dtype=float)
+            if ul.shape != (self.N,):
+                raise ValueError(f"upper_limits must have shape ({self.N},)")
+            self.upper_limits = ul
+        if np.any(self.lower_limits >= self.upper_limits):
+            raise ValueError("Each lower limit must be strictly less than upper limit")
 
     # -----------------------------
     # State setting
@@ -226,7 +245,7 @@ class SixDOFArmIK:
         angles = np.asarray(angles, dtype=float)
         if angles.shape != (self.N,):
             raise ValueError(f"angles must have shape ({self.N},)")
-        self.angles = angles.copy()
+        self.angles = np.clip(angles, self.lower_limits, self.upper_limits)
 
     def set_state_from_quaternions(self, quats: np.ndarray) -> None:
         quats = np.asarray(quats, dtype=float)
@@ -235,7 +254,19 @@ class SixDOFArmIK:
         angles = np.zeros(self.N, dtype=float)
         for i in range(self.N):
             angles[i] = project_quat_angle_onto_axis(quat_normalize(quats[i]), self.a_home[i])
-        self.angles = angles
+        self.angles = np.clip(angles, self.lower_limits, self.upper_limits)
+
+    def set_joint_limits(self, lower_limits: np.ndarray, upper_limits: np.ndarray) -> None:
+        ll = np.asarray(lower_limits, dtype=float)
+        ul = np.asarray(upper_limits, dtype=float)
+        if ll.shape != (self.N,) or ul.shape != (self.N,):
+            raise ValueError(f"limits must each have shape ({self.N},)")
+        if np.any(ll >= ul):
+            raise ValueError("Each lower limit must be strictly less than upper limit")
+        self.lower_limits = ll
+        self.upper_limits = ul
+        # Clamp current state to the new limits
+        self.angles = np.clip(self.angles, self.lower_limits, self.upper_limits)
 
     # -----------------------------
     # Forward kinematics (recursive)
@@ -326,6 +357,8 @@ class SixDOFArmIK:
             theta = np.asarray(initial_angles, dtype=float)
             if theta.shape != (self.N,):
                 raise ValueError(f"initial_angles must have shape ({self.N},)")
+        # Respect limits from the start
+        theta = np.clip(theta, self.lower_limits, self.upper_limits)
 
         lam = float(damping)
         prev_err = None
@@ -382,6 +415,8 @@ class SixDOFArmIK:
                 delta = (delta / d_norm) * step_limit
 
             theta = theta + delta
+            # Enforce joint limits after each update
+            theta = np.clip(theta, self.lower_limits, self.upper_limits)
 
             err_pos_norm = float(np.linalg.norm(e_pos))
             err_ori_norm = float(np.linalg.norm(e_rot))
@@ -399,7 +434,7 @@ class SixDOFArmIK:
 
             # Check convergence
             if err_pos_norm <= pos_tol and err_ori_norm <= ori_tol:
-                self.angles = theta.copy()
+                self.angles = np.clip(theta, self.lower_limits, self.upper_limits)
                 final_fk = self.forward_kinematics(theta)
                 return IKSolution(
                     success=True,
