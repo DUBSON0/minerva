@@ -1,7 +1,25 @@
 #!/usr/bin/env python3
 """
-Flask Web GUI for PCA9685 MQTT Servo Controller
-Provides a web interface to control 6 servo motors
+Flask Web GUI for PCA9685 MQTT Servo Controller with IK Integration
+
+Provides a web interface to control 6 servo motors with integrated
+inverse kinematics for 3D position control of a 5-DOF robotic arm.
+
+Features:
+- Individual servo control (0-180°)
+- 3D position control using inverse kinematics
+- Real-time servo status monitoring via MQTT
+- Joint angle computation from target positions
+- Automatic angle calibration for servo compatibility
+
+API Endpoints:
+- GET  /api/servos - Get all servo states
+- POST /api/servo/<channel>/angle - Set servo angle
+- POST /api/servo/<channel>/duty - Set servo duty cycle
+- POST /api/servos/center - Center all servos
+- POST /api/ik/compute - Compute IK for target position
+- POST /api/ik/move - Move to computed angles
+- POST /api/ik/compute_and_move - Compute IK and move in one call
 """
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for
@@ -12,43 +30,38 @@ import time
 import threading
 import logging
 from datetime import datetime
-import numpy as np
 import sys
 import os
 
-# Add kinematics directory to path for importing IK module
+# Add the kinematics directory to the Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'kinematics'))
-from robotic_arm_ik import SixDOFArmIK
+
+# Import IK API
+from ik_api import compute_ik as compute_ik_api
+
+# Joint angle calibration/mapping
+# Convert from IK joint angles (-90° to +90°) to servo angles (0° to 180°)
+JOINT_CALIBRATION_OFFSETS = [90.0, 90.0, 90.0, 90.0, 90.0]  # Add 90° to center each joint
+
+def map_ik_angles_to_servo_angles(ik_angles_degrees):
+    """Map IK joint angles to servo angles with proper calibration"""
+    servo_angles = []
+    for i, ik_angle in enumerate(ik_angles_degrees):
+        # Apply calibration offset
+        servo_angle = ik_angle + JOINT_CALIBRATION_OFFSETS[i]
+
+        # Ensure angle is within valid servo range
+        servo_angle = max(0.0, min(180.0, servo_angle))
+
+        servo_angles.append(servo_angle)
+
+    return servo_angles
 
 # Configuration
 MQTT_HOST = "localhost"  # MQTT broker runs on same computer as web UI
 MQTT_PORT = 1883
 MQTT_TOPIC_SERVO = "servo/control"
 MQTT_TOPIC_STATUS = "servo/status"
-
-# Robot arm configuration (6-DOF) - Simple planar robot for testing
-# Joint positions (meters) - each joint's pivot point
-ROBOT_P_HOME = np.array([
-    [0.0, 0.0, 0.0],   # Joint 0: base
-    [0.0, 0.0, 0.0],   # Joint 1: first link
-    [0.3, 0.0, 0.0],   # Joint 2: second link
-    [0.6, 0.0, 0.0],   # Joint 3: third link
-    [0.9, 0.0, 0.0],   # Joint 4: fourth link
-    [1.2, 0.0, 0.0],   # Joint 5: fifth link
-], dtype=float)
-
-# Joint rotation axes (unit vectors) - all rotate around Z for planar motion
-ROBOT_A_HOME = np.array([
-    [0.0, 0.0, 1.0],   # Joint 0: base rotation
-    [0.0, 0.0, 1.0],   # Joint 1: first joint rotation
-    [0.0, 0.0, 1.0],   # Joint 2: second joint rotation
-    [0.0, 0.0, 1.0],   # Joint 3: third joint rotation
-    [0.0, 0.0, 1.0],   # Joint 4: fourth joint rotation
-    [0.0, 0.0, 1.0],   # Joint 5: fifth joint rotation
-], dtype=float)
-
-# Tool offset (end-effector position relative to last joint)
-TOOL_OFFSET = np.array([0.3, 0.0, 0.0])  # 30cm tool offset along X
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'servo_control_secret_key'
@@ -65,8 +78,7 @@ class ServoController:
         self.servo_states = {}
         self.last_status = {}
 
-        # Initialize IK solver for the robot arm
-        self.ik_solver = SixDOFArmIK(ROBOT_P_HOME, ROBOT_A_HOME, tool_offset=TOOL_OFFSET)
+
 
         # Initialize servo states for 6 motors (channels 0-5)
         for i in range(6):
@@ -208,104 +220,7 @@ class ServoController:
         """Check if MQTT is connected"""
         return self.connected
 
-    def compute_ik(self, target_position, target_orientation=None):
-        """Compute inverse kinematics for target position and orientation
 
-        Args:
-            target_position: [x, y, z] coordinates in meters
-            target_orientation: quaternion [w, x, y, z] or None for default
-
-        Returns:
-            dict: {'success': bool, 'angles': list, 'message': str, 'position': list}
-        """
-        try:
-            # Default orientation (no rotation) if not provided
-            if target_orientation is None:
-                target_q = np.array([1.0, 0.0, 0.0, 0.0])  # identity quaternion
-            else:
-                target_q = np.array(target_orientation)
-
-            # Convert target position to numpy array
-            target_p = np.array(target_position, dtype=float)
-
-            # Solve IK
-            solution = self.ik_solver.solve_ik(
-                target_p,
-                target_q,
-                max_iters=200,
-                pos_tol=1e-3,
-                ori_tol=1e-2
-            )
-
-            if solution.success:
-                # Convert angles from radians to degrees for servo control
-                angles_deg = np.degrees(solution.angles)
-
-                # Ensure angles are within servo range (0-180 degrees)
-                angles_deg = np.clip(angles_deg, 0, 180)
-
-                return {
-                    'success': True,
-                    'angles': angles_deg.tolist(),
-                    'message': f'IK converged in {solution.iters} iterations',
-                    'position': solution.fk.end_effector_position.tolist(),
-                    'target_position': target_position
-                }
-            else:
-                return {
-                    'success': False,
-                    'angles': None,
-                    'message': solution.message,
-                    'position': solution.fk.end_effector_position.tolist(),
-                    'target_position': target_position
-                }
-
-        except Exception as e:
-            logger.error(f"IK computation error: {e}")
-            return {
-                'success': False,
-                'angles': None,
-                'message': f"IK computation failed: {str(e)}",
-                'position': None,
-                'target_position': target_position
-            }
-
-    def move_to_ik_position(self, angles):
-        """Move servos to angles computed by IK
-
-        Args:
-            angles: list of 6 angles in degrees
-
-        Returns:
-            dict: {'success': bool, 'results': list, 'message': str}
-        """
-        if len(angles) != 6:
-            return {
-                'success': False,
-                'results': [],
-                'message': 'Must provide exactly 6 angles'
-            }
-
-        results = []
-        success_count = 0
-
-        for i, angle in enumerate(angles):
-            success, message = self.set_servo_angle(i, angle)
-            results.append({
-                'channel': i,
-                'success': success,
-                'message': message,
-                'angle': angle
-            })
-            if success:
-                success_count += 1
-
-        overall_success = success_count == 6
-        return {
-            'success': overall_success,
-            'results': results,
-            'message': f'Moved {success_count}/6 joints successfully'
-        }
 
 # Global servo controller instance
 servo_controller = ServoController()
@@ -391,6 +306,173 @@ def center_all_servos():
         'results': results
     })
 
+@app.route('/api/ik/compute', methods=['POST'])
+def compute_ik():
+    """Compute inverse kinematics for target position"""
+    try:
+        data = request.get_json()
+        if not data or 'x' not in data or 'y' not in data or 'z' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'Missing coordinates. Required: x, y, z',
+                'error': 'Invalid input data'
+            }), 400
+
+        x = float(data['x'])
+        y = float(data['y'])
+        z = float(data['z'])
+
+        # Compute IK using the API
+        result = compute_ik_api([x, y, z])
+
+        # Convert radians to degrees and apply servo calibration
+        if result['success'] and result['joint_angles']:
+            ik_angles_degrees = [angle * 180.0 / 3.141592653589793 for angle in result['joint_angles']]
+            result['angles'] = map_ik_angles_to_servo_angles(ik_angles_degrees)
+            result['ik_angles_raw'] = ik_angles_degrees  # Keep original IK angles for reference
+
+        logger.info(f"IK computation for ({x:.3f}, {y:.3f}, {z:.3f}): {'SUCCESS' if result['success'] else 'FAILED'}")
+        return jsonify(result)
+
+    except ValueError as e:
+        logger.error(f"IK computation error: {e}")
+        return jsonify({
+            'success': False,
+            'message': 'Invalid coordinate values',
+            'error': str(e)
+        }), 400
+    except Exception as e:
+        logger.error(f"IK computation error: {e}")
+        return jsonify({
+            'success': False,
+            'message': 'IK computation failed',
+            'error': str(e)
+        }), 500
+
+@app.route('/api/ik/move', methods=['POST'])
+def move_to_ik_position():
+    """Move servos to computed IK angles"""
+    try:
+        data = request.get_json()
+        if not data or 'angles' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'Missing angles array',
+                'error': 'Invalid input data'
+            }), 400
+
+        angles = data['angles']
+        if not isinstance(angles, list) or len(angles) != 5:
+            return jsonify({
+                'success': False,
+                'message': 'Angles must be a list of 5 values (degrees)',
+                'error': 'Invalid angles format'
+            }), 400
+
+        # Move each servo to the computed angle
+        results = []
+        for i, angle_deg in enumerate(angles):
+            success, message = servo_controller.set_servo_angle(i, angle_deg)
+            results.append({
+                'channel': i,
+                'angle': angle_deg,
+                'success': success,
+                'message': message
+            })
+
+            if success:
+                logger.info(f"Servo {i}: moved to {angle_deg:.1f}°")
+            else:
+                logger.error(f"Servo {i}: failed to move - {message}")
+
+            # Small delay between commands to avoid overwhelming the system
+            time.sleep(0.1)
+
+        overall_success = all(result['success'] for result in results)
+
+        return jsonify({
+            'success': overall_success,
+            'message': 'Movement completed' if overall_success else 'Some movements failed',
+            'results': results
+        })
+
+    except Exception as e:
+        logger.error(f"IK move error: {e}")
+        return jsonify({
+            'success': False,
+            'message': 'Movement failed',
+            'error': str(e)
+        }), 500
+
+@app.route('/api/ik/compute_and_move', methods=['POST'])
+def compute_and_move_ik():
+    """Compute IK and immediately move to position"""
+    try:
+        data = request.get_json()
+        if not data or 'x' not in data or 'y' not in data or 'z' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'Missing coordinates. Required: x, y, z',
+                'error': 'Invalid input data'
+            }), 400
+
+        x = float(data['x'])
+        y = float(data['y'])
+        z = float(data['z'])
+
+        # Compute IK
+        ik_result = compute_ik_api([x, y, z])
+
+        if not ik_result['success']:
+            return jsonify({
+                'success': False,
+                'message': 'IK computation failed',
+                'ik_result': ik_result
+            }), 400
+
+        # Convert to degrees and apply servo calibration
+        ik_angles_degrees = [angle * 180.0 / 3.141592653589793 for angle in ik_result['joint_angles']]
+        angles_degrees = map_ik_angles_to_servo_angles(ik_angles_degrees)
+
+        # Move each servo
+        results = []
+        for i, angle_deg in enumerate(angles_degrees):
+            success, message = servo_controller.set_servo_angle(i, angle_deg)
+            results.append({
+                'channel': i,
+                'angle': angle_deg,
+                'success': success,
+                'message': message
+            })
+
+            if success:
+                logger.info(f"Servo {i}: moved to {angle_deg:.1f}°")
+            else:
+                logger.error(f"Servo {i}: failed to move - {message}")
+
+            time.sleep(0.1)
+
+        overall_success = all(result['success'] for result in results)
+
+        return jsonify({
+            'success': overall_success,
+            'message': 'Computation and movement completed' if overall_success else 'Computation successful but some movements failed',
+            'ik_result': {
+                **ik_result,
+                'angles': angles_degrees,
+                'ik_angles_raw': ik_angles_degrees  # Include raw IK angles for reference
+            },
+            'movement_results': results
+        })
+
+    except Exception as e:
+        logger.error(f"Compute and move error: {e}")
+        return jsonify({
+            'success': False,
+            'message': 'Compute and move failed',
+            'error': str(e)
+        }), 500
+
 @socketio.on('connect')
 def handle_connect():
     """Handle WebSocket connection"""
@@ -417,108 +499,7 @@ def handle_set_servo_angle(data):
         'angle': angle
     })
 
-# IK API Endpoints
-@app.route('/api/ik/compute', methods=['POST'])
-def compute_ik():
-    """Compute inverse kinematics for target position"""
-    try:
-        data = request.get_json()
 
-        # Extract position coordinates
-        x = float(data.get('x', 0.0))
-        y = float(data.get('y', 0.0))
-        z = float(data.get('z', 0.0))
-        target_position = [x, y, z]
-
-        # Extract orientation if provided (optional)
-        orientation = None
-        if 'orientation' in data:
-            ori_data = data['orientation']
-            if isinstance(ori_data, list) and len(ori_data) == 4:
-                orientation = ori_data
-
-        result = servo_controller.compute_ik(target_position, orientation)
-
-        return jsonify(result)
-
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f"API error: {str(e)}",
-            'angles': None,
-            'position': None
-        }), 400
-
-@app.route('/api/ik/move', methods=['POST'])
-def move_to_ik_position():
-    """Move robot to IK-computed position"""
-    try:
-        data = request.get_json()
-        angles = data.get('angles', [])
-
-        if not isinstance(angles, list) or len(angles) != 6:
-            return jsonify({
-                'success': False,
-                'message': 'Must provide exactly 6 angles'
-            }), 400
-
-        # Convert to float and validate
-        angles = [float(angle) for angle in angles]
-
-        result = servo_controller.move_to_ik_position(angles)
-
-        return jsonify(result)
-
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f"API error: {str(e)}"
-        }), 400
-
-@app.route('/api/ik/compute_and_move', methods=['POST'])
-def compute_and_move():
-    """Compute IK and immediately move to position"""
-    try:
-        data = request.get_json()
-
-        # Extract position coordinates
-        x = float(data.get('x', 0.0))
-        y = float(data.get('y', 0.0))
-        z = float(data.get('z', 0.0))
-        target_position = [x, y, z]
-
-        # Extract orientation if provided (optional)
-        orientation = None
-        if 'orientation' in data:
-            ori_data = data['orientation']
-            if isinstance(ori_data, list) and len(ori_data) == 4:
-                orientation = ori_data
-
-        # First compute IK
-        ik_result = servo_controller.compute_ik(target_position, orientation)
-
-        if not ik_result['success']:
-            return jsonify({
-                'success': False,
-                'message': f"IK computation failed: {ik_result['message']}",
-                'ik_result': ik_result
-            }), 400
-
-        # Then move to position
-        move_result = servo_controller.move_to_ik_position(ik_result['angles'])
-
-        return jsonify({
-            'success': move_result['success'],
-            'message': move_result['message'],
-            'ik_result': ik_result,
-            'move_result': move_result
-        })
-
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f"API error: {str(e)}"
-        }), 400
 
 if __name__ == '__main__':
     print("🤖 PCA9685 MQTT Servo Web Controller")
