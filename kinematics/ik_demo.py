@@ -69,13 +69,16 @@ def main():
     tool_offset = np.array([0.0, 0.0, 0.1]) #needs to be corrected
 
     arm = ik["SixDOFArmIK"](p_home, a_home, tool_offset=tool_offset)
+    # Set servo limits to [0, pi] for all joints
+    N = p_home.shape[0]
+    arm.set_joint_limits(np.zeros(N), np.pi * np.ones(N))
     arm.set_state_from_angles(np.array([1.3, 1.2, 1.4, 1.3, 1.1])) #would be better to set current position of the servos.
 
-    target_p = np.array([-0.1, 0.1, 0.2])
+    target_p = np.array([-0.1, 0.3, 0.1])
     target_q = ik["quat_from_axis_angle"]([0, 1, 0], np.deg2rad(30))
 
     # Toggle recording here
-    record = True  # set to False for speed, no plots
+    record = False  # set to False for speed, no plots
 
     sol = arm.solve_ik(
         target_p,
